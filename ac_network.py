@@ -4,8 +4,6 @@ import tensorflow.contrib.slim as slim
 
 # Clipping ratio for gradients
 CLIP_NORM = 40.0
-# Cell units
-CELL_UNITS = 128
 
 #Used to initialize weights for policy and value output layers
 def normalized_columns_initializer(std=1.0):
@@ -16,13 +14,13 @@ def normalized_columns_initializer(std=1.0):
     return _initializer
 
 class AC_Network():
-    def __init__(self, s_size, a_size, scope, trainer):
+    def __init__(self, s_size, a_size, cell_units, scope, trainer):
         with tf.variable_scope(scope):
             # Input
             self.inputs = tf.placeholder(shape=[None, s_size], dtype=tf.float32)
 
             # Recurrent network for temporal dependencies
-            lstm_cell = tf.contrib.rnn.BasicLSTMCell(CELL_UNITS, state_is_tuple=True)
+            lstm_cell = tf.contrib.rnn.BasicLSTMCell(cell_units, state_is_tuple=True)
             c_init = np.zeros((1, lstm_cell.state_size.c), np.float32)
             h_init = np.zeros((1, lstm_cell.state_size.h), np.float32)
             self.state_init = [c_init, h_init]
@@ -37,7 +35,7 @@ class AC_Network():
                 time_major=False)
             lstm_c, lstm_h = lstm_state
             self.state_out = (lstm_c[:1, :], lstm_h[:1, :])
-            rnn_out = tf.reshape(lstm_outputs, [-1, CELL_UNITS])
+            rnn_out = tf.reshape(lstm_outputs, [-1, cell_units])
 
             # Output layers for policy and value estimations
             self.policy = slim.fully_connected(rnn_out, a_size,

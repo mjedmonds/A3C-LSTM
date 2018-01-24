@@ -4,6 +4,9 @@ import numpy as np
 import gym
 from ac_network import AC_Network
 
+from gym_lock.session_manager import SessionManager
+from gym_lock.settings_scenario import select_scenario
+
 # Size of mini batches to run training on
 MINI_BATCH = 30
 REWARD_FACTOR = 0.001
@@ -35,7 +38,7 @@ def norm(x, upper, lower=0.):
     return (x-lower)/max((upper-lower), 1e-12)
 
 class Worker():
-    def __init__(self, name, s_size, a_size, trainer, model_path, global_episodes, env_name, seed, test):
+    def __init__(self, name, s_size, a_size, trainer, model_path, global_episodes, env_name, seed, test, cell_units, params, testing_trial=False):
         self.name = "worker_" + str(name)
         self.number = name
         self.model_path = model_path
@@ -48,12 +51,28 @@ class Worker():
         self.summary_writer = tf.summary.FileWriter("train_" + str(self.number))
         self.is_test = test
         self.a_size = a_size
+        self.params = params
 
         # Create the local copy of the network and the tensorflow op to copy global parameters to local network
-        self.local_AC = AC_Network(s_size, a_size, self.name, trainer)
+        self.local_AC = AC_Network(s_size, a_size, cell_units, self.name, trainer)
         self.update_local_ops = update_target_graph('global', self.name)
 
+        self.testing_trial = testing_trial
+        if not self.testing_trial:
+            self.scenario_name = params['train_scenario_name']
+            self.attempt_limit = params['train_attempt_limit']
+        else:
+            self.scenario_name = params['test_scenario_name']
+            self.attempt_limit = params['test_attempt_limit']
+
+        self.scenario = select_scenario(self.scenario_name, params['use_physics'])
         self.env = gym.make(env_name)
+
+        self.manager = SessionManager(self.env, params, human=False)
+        self.manager.update_scenario(self.scenario)
+        self.env.reward_mode = params['reward_mode']
+
+        self.trial_count = 0
         self.env.seed(seed)
 
     def get_env(self):
@@ -104,30 +123,54 @@ class Worker():
         total_steps = 0
         print("Starting worker " + str(self.number))
         with sess.as_default(), sess.graph.as_default():
+            sess.run(self.update_local_ops)
+            episode_buffer = []
+            episode_mini_buffer = []
+            episode_values = []
+            episode_states = []
+            episode_reward = 0
+            episode_step_count = 0
+
+            if not self.testing_trial:
+                trial_selected = self.manager.run_trial_common_setup(self.params['train_scenario_name'], self.params['train_action_limit'], self.params['train_attempt_limit'], multithreaded=True)
+            else:
+                trial_selected = self.manager.run_trial_common_setup(self.params['test_scenario_name'], self.params['test_action_limit'], self.params['test_attempt_limit'], specified_trial='trial7', multithreaded=True)
+
+            self.env.reset()
             while not coord.should_stop():
-                sess.run(self.update_local_ops)
-                episode_buffer = []
-                episode_mini_buffer = []
-                episode_values = []
-                episode_states = []
-                episode_reward = 0
-                episode_step_count = 0
+
+                # update trial if needed
+                if self.env.attempt_count > self.attempt_limit or self.env.logger.cur_trial.success is True:
+                    if not self.testing_trial:
+                        trial_selected = self.manager.run_trial_common_setup(self.params['train_scenario_name'], self.params['train_action_limit'], self.params['train_attempt_limit'], multithreaded=True)
+                    else:
+                        trial_selected = self.manager.run_trial_common_setup(self.params['test_scenario_name'], self.params['test_action_limit'], self.params['test_attempt_limit'], specified_trial='trial7', multithreaded=True)
+                    print('scenario_name: {}, trial_count: {}, trial_name: {}'.format(self.scenario_name, self.trial_count, trial_selected))
+                    sess.run(self.update_local_ops)
+                    episode_buffer = []
+                    episode_mini_buffer = []
+                    episode_values = []
+                    episode_states = []
+                    episode_reward = 0
+                    episode_step_count = 0
+                    self.trial_count += 1
+                    self.env.reset()
 
                 # Restart environment
-                terminal = False
-                s = self.env.reset()
+                done = False
+                state = self.env.reset()
 
                 rnn_state = self.local_AC.state_init
 
                 # Run an episode
-                while not terminal:
-                    episode_states.append(s)
+                while not done:
+                    episode_states.append(state)
                     if self.is_test:
                         self.env.render()
 
                     # Get preferred action distribution
                     a_dist, v, rnn_state = sess.run([self.local_AC.policy, self.local_AC.value, self.local_AC.state_out],
-                                         feed_dict={self.local_AC.inputs: [s],
+                                         feed_dict={self.local_AC.inputs: [state],
                                                     self.local_AC.state_in[0]: rnn_state[0],
                                                     self.local_AC.state_in[1]: rnn_state[1]})
 
@@ -137,26 +180,26 @@ class Worker():
                     a = np.zeros(self.a_size)
                     a[a0] = 1
 
-                    s2, r, terminal, info = self.env.step(np.argmax(a))
+                    next_state, reward, done, opt = self.env.step(np.argmax(a), multithreaded=False)
 
-                    episode_reward += r
+                    episode_reward += reward
 
-                    episode_buffer.append([s, a, r, s2, terminal, v[0, 0]])
-                    episode_mini_buffer.append([s, a, r, s2, terminal, v[0, 0]])
+                    episode_buffer.append([state, a, reward, next_state, done, v[0, 0]])
+                    episode_mini_buffer.append([state, a, reward, next_state, done, v[0, 0]])
 
                     episode_values.append(v[0, 0])
 
                     # Train on mini batches from episode
                     if len(episode_mini_buffer) == MINI_BATCH and not self.is_test:
                         v1 = sess.run([self.local_AC.value],
-                                      feed_dict={self.local_AC.inputs: [s],
+                                      feed_dict={self.local_AC.inputs: [state],
                                                     self.local_AC.state_in[0]: rnn_state[0],
                                                     self.local_AC.state_in[1]: rnn_state[1]})
                         v_l, p_l, e_l, g_n, v_n = self.train(episode_mini_buffer, sess, gamma, v1[0][0])
                         episode_mini_buffer = []
 
                     # Set previous state for next step
-                    s = s2
+                    state = next_state
                     total_steps += 1
                     episode_step_count += 1
 
@@ -164,11 +207,14 @@ class Worker():
                 self.episode_lengths.append(episode_step_count)
                 self.episode_mean_values.append(np.mean(episode_values))
 
-                if episode_count % 10 == 0 and not episode_count % 100 == 0 and not self.is_test:
+                if episode_count % 100 == 0 and not episode_count % 1000 == 0 and not self.is_test:
                     mean_reward = np.mean(self.episode_rewards[-5:])
                     mean_length = np.mean(self.episode_lengths[-5:])
                     mean_value = np.mean(self.episode_mean_values[-5:])
                     summary = tf.Summary()
+                    summary.value.add(tag='Scenario name', simple_value=str(self.env.scenario.name))
+                    summary.value.add(tag='trial count', simple_value=str(self.trial_count))
+                    summary.value.add(tag='trial name', simple_value=str(trial_selected))
                     summary.value.add(tag='Perf/Reward', simple_value=float(mean_reward))
                     summary.value.add(tag='Perf/Length', simple_value=float(mean_length))
                     summary.value.add(tag='Perf/Value', simple_value=float(mean_value))
@@ -182,7 +228,7 @@ class Worker():
                     self.summary_writer.flush()
 
                 if self.name == 'worker_0':
-                    if episode_count % 100 == 0 and not self.is_test:
+                    if episode_count % 1000 == 0 and not self.is_test:
                         saver.save(sess, self.model_path + '/model-' + str(episode_count) + '.cptk')
 
                     print("| Reward: " + str(episode_reward), " | Episode", episode_count)
