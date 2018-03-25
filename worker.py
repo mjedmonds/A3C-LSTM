@@ -4,7 +4,7 @@ import numpy as np
 import gym
 from ac_network import AC_Network
 
-from gym_lock.session_manager import SessionManager
+from session_manager import SessionManager
 from gym_lock.settings_scenario import select_scenario
 
 # Size of mini batches to run training on
@@ -66,17 +66,17 @@ class Worker():
             self.attempt_limit = params['test_attempt_limit']
 
         self.scenario = select_scenario(self.scenario_name, params['use_physics'])
-        self.env = gym.make(env_name)
+        env = gym.make(env_name)
 
-        self.manager = SessionManager(self.env, params, human=False)
+        self.manager = SessionManager(env, params, human=False)
         self.manager.update_scenario(self.scenario)
-        self.env.reward_mode = params['reward_mode']
+        self.manager.env.reward_mode = params['reward_mode']
 
         self.trial_count = 0
-        self.env.seed(seed)
+        self.manager.env.seed(seed)
 
     def get_env(self):
-        return self.env
+        return self.manager.env
 
     def train(self, rollout, sess, gamma, r):
         rollout = np.array(rollout)
@@ -136,11 +136,11 @@ class Worker():
             else:
                 trial_selected = self.manager.run_trial_common_setup(self.params['test_scenario_name'], self.params['test_action_limit'], self.params['test_attempt_limit'], specified_trial='trial7', multithreaded=True)
 
-            self.env.reset()
+            self.manager.env.reset()
             while not coord.should_stop():
 
                 # update trial if needed
-                if self.env.attempt_count > self.attempt_limit or self.env.logger.cur_trial.success is True:
+                if self.manager.env.attempt_count > self.attempt_limit or self.manager.logger.cur_trial.success is True:
                     if not self.testing_trial:
                         trial_selected = self.manager.run_trial_common_setup(self.params['train_scenario_name'], self.params['train_action_limit'], self.params['train_attempt_limit'], multithreaded=True)
                     else:
@@ -154,11 +154,11 @@ class Worker():
                     episode_reward = 0
                     episode_step_count = 0
                     self.trial_count += 1
-                    self.env.reset()
+                    self.manager.env.reset()
 
                 # Restart environment
                 done = False
-                state = self.env.reset()
+                state = self.manager.env.reset()
 
                 rnn_state = self.local_AC.state_init
 
@@ -166,7 +166,7 @@ class Worker():
                 while not done:
                     episode_states.append(state)
                     if self.is_test:
-                        self.env.render()
+                        self.manager.env.render()
 
                     # Get preferred action distribution
                     a_dist, v, rnn_state = sess.run([self.local_AC.policy, self.local_AC.value, self.local_AC.state_out],
@@ -180,7 +180,7 @@ class Worker():
                     a = np.zeros(self.a_size)
                     a[a0] = 1
 
-                    next_state, reward, done, opt = self.env.step(np.argmax(a), multithreaded=False)
+                    next_state, reward, done, opt = self.manager.env.step(np.argmax(a), multithreaded=False)
 
                     episode_reward += reward
 
@@ -212,7 +212,7 @@ class Worker():
                     mean_length = np.mean(self.episode_lengths[-5:])
                     mean_value = np.mean(self.episode_mean_values[-5:])
                     summary = tf.Summary()
-                    summary.value.add(tag='Scenario name', simple_value=str(self.env.scenario.name))
+                    summary.value.add(tag='Scenario name', simple_value=str(self.manager.env.scenario.name))
                     summary.value.add(tag='trial count', simple_value=str(self.trial_count))
                     summary.value.add(tag='trial name', simple_value=str(trial_selected))
                     summary.value.add(tag='Perf/Reward', simple_value=float(mean_reward))

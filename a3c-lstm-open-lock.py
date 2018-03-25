@@ -21,10 +21,10 @@ import gym
 from worker import Worker
 from ac_network import AC_Network
 
-from gym_lock.session_manager import SessionManager
+from session_manager import SessionManager
 from gym_lock.settings_trial import PARAMS, IDX_TO_PARAMS
 from gym_lock.settings_scenario import select_scenario
-from gym_lock.space_manager import ObservationSpace, ActionSpace
+from gym_lock.space_manager import ObservationSpace
 
 # ==========================
 #   Training Parameters
