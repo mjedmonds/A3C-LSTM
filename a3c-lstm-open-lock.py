@@ -59,7 +59,7 @@ def main(_):
     else:
         setting = sys.argv[1]
         params = PARAMS[IDX_TO_PARAMS[int(setting)-1]]
-        print('training_scenario: {}, testing_scenario: {}'.format(params['train_scenario_name'], params['test_scenario_name']))
+        print(('training_scenario: {}, testing_scenario: {}'.format(params['train_scenario_name'], params['test_scenario_name'])))
         reward_mode = sys.argv[2]
 
     use_physics = False
@@ -151,7 +151,7 @@ def main(_):
         else:
             # This is where the asynchronous magic happens.
             # Start the "work" process for each worker in a separate thread.
-            print 'Launching workers...'
+            print('Launching workers...')
             worker_threads = []
             for worker in workers:
                 worker_work = lambda: worker.work(GAMMA, sess, coord, saver)
